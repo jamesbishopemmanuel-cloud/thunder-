@@ -1,239 +1,310 @@
 /**
- * API Client
+ * API Integration Layer
  * Veylora - Connect • Create • Share
  */
 
-import { getAuthToken } from './utils/auth.js';
+const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
-const API_BASE_URL = window.location.origin;
+let authToken = null;
 
-export async function apiCall(endpoint, options = {}) {
-  const method = options.method || 'GET';
+// Set auth token
+export function setAuthToken(token) {
+  authToken = token;
+  localStorage.setItem('authToken', token);
+}
+
+// Get auth token
+export function getAuthToken() {
+  if (!authToken) {
+    authToken = localStorage.getItem('authToken');
+  }
+  return authToken;
+}
+
+// Clear auth token
+export function clearAuthToken() {
+  authToken = null;
+  localStorage.removeItem('authToken');
+}
+
+// Base API request handler
+async function apiRequest(endpoint, options = {}) {
   const headers = {
     'Content-Type': 'application/json',
     ...options.headers
   };
 
-  // Add authentication token if available
   const token = getAuthToken();
   if (token) {
     headers['Authorization'] = `Bearer ${token}`;
   }
 
-  const config = {
-    method,
-    headers,
-    ...options
-  };
-
-  if (options.body && typeof options.body === 'object') {
-    config.body = JSON.stringify(options.body);
-  }
-
   try {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, config);
-    
-    // Handle 401 Unauthorized
-    if (response.status === 401) {
-      localStorage.removeItem('auth_token');
-      window.location.href = '/';
-      return null;
-    }
+    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers
+    });
 
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.message || `API Error: ${response.status}`);
-    }
-
-    // Handle empty responses
-    if (response.status === 204) {
-      return null;
+      if (response.status === 401) {
+        clearAuthToken();
+        window.dispatchEvent(new CustomEvent('auth:unauthorized'));
+      }
+      throw new Error(`API Error: ${response.status} ${response.statusText}`);
     }
 
     return await response.json();
   } catch (error) {
-    console.error(`API Error [${method} ${endpoint}]:`, error);
+    console.error('API Request Error:', error);
     throw error;
   }
 }
 
-// Authentication endpoints
-export async function registerUser(data) {
-  return apiCall('/api/auth/register', {
+// Authentication Endpoints
+export async function register(email, password, firstName, lastName, phoneNumber) {
+  return apiRequest('/auth/register', {
     method: 'POST',
-    body: data
+    body: JSON.stringify({
+      email,
+      password,
+      firstName,
+      lastName,
+      phoneNumber
+    })
   });
 }
 
-export async function loginUser(data) {
-  return apiCall('/api/auth/login', {
+export async function login(email, password) {
+  const response = await apiRequest('/auth/login', {
     method: 'POST',
-    body: data
+    body: JSON.stringify({ email, password })
   });
+
+  if (response.token) {
+    setAuthToken(response.token);
+  }
+
+  return response;
 }
 
-export async function requestOTP(phoneNumber) {
-  return apiCall('/api/auth/request-otp', {
-    method: 'POST',
-    body: { phoneNumber }
-  });
+export async function logout() {
+  clearAuthToken();
+  return apiRequest('/auth/logout', { method: 'POST' });
 }
 
-export async function verifyOTP(phoneNumber, otp) {
-  return apiCall('/api/auth/verify-otp', {
-    method: 'POST',
-    body: { phoneNumber, otp }
-  });
+export async function verifyToken() {
+  return apiRequest('/auth/verify', { method: 'GET' });
 }
 
+export async function refreshToken() {
+  const response = await apiRequest('/auth/refresh', { method: 'POST' });
+  if (response.token) {
+    setAuthToken(response.token);
+  }
+  return response;
+}
+
+// User Endpoints
 export async function getCurrentUser() {
-  return apiCall('/api/auth/me');
+  return apiRequest('/users/me', { method: 'GET' });
 }
 
-// Messaging endpoints
+export async function updateProfile(data) {
+  return apiRequest('/users/me', {
+    method: 'PUT',
+    body: JSON.stringify(data)
+  });
+}
+
+export async function uploadAvatar(file) {
+  const formData = new FormData();
+  formData.append('avatar', file);
+
+  return fetch(`${API_BASE_URL}/users/me/avatar`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${getAuthToken()}`
+    },
+    body: formData
+  }).then(res => res.json());
+}
+
+export async function getUser(userId) {
+  return apiRequest(`/users/${userId}`, { method: 'GET' });
+}
+
+export async function searchUsers(query) {
+  return apiRequest(`/users/search?q=${encodeURIComponent(query)}`, { method: 'GET' });
+}
+
+export async function blockUser(userId) {
+  return apiRequest(`/users/${userId}/block`, { method: 'POST' });
+}
+
+export async function unblockUser(userId) {
+  return apiRequest(`/users/${userId}/unblock`, { method: 'POST' });
+}
+
+// Conversation Endpoints
 export async function getConversations(page = 1, limit = 20) {
-  return apiCall(`/api/messages/conversations?page=${page}&limit=${limit}`);
+  return apiRequest(`/conversations?page=${page}&limit=${limit}`, { method: 'GET' });
 }
 
 export async function getConversation(conversationId) {
-  return apiCall(`/api/messages/conversations/${conversationId}`);
+  return apiRequest(`/conversations/${conversationId}`, { method: 'GET' });
 }
 
+export async function createConversation(participantIds) {
+  return apiRequest('/conversations', {
+    method: 'POST',
+    body: JSON.stringify({ participantIds })
+  });
+}
+
+export async function updateConversation(conversationId, data) {
+  return apiRequest(`/conversations/${conversationId}`, {
+    method: 'PUT',
+    body: JSON.stringify(data)
+  });
+}
+
+export async function deleteConversation(conversationId) {
+  return apiRequest(`/conversations/${conversationId}`, { method: 'DELETE' });
+}
+
+export async function archiveConversation(conversationId) {
+  return apiRequest(`/conversations/${conversationId}/archive`, { method: 'POST' });
+}
+
+export async function muteConversation(conversationId, duration) {
+  return apiRequest(`/conversations/${conversationId}/mute`, {
+    method: 'POST',
+    body: JSON.stringify({ duration })
+  });
+}
+
+// Message Endpoints
 export async function getMessages(conversationId, page = 1, limit = 50) {
-  return apiCall(`/api/messages/${conversationId}?page=${page}&limit=${limit}`);
-}
-
-export async function sendMessage(conversationId, message) {
-  return apiCall('/api/messages/send', {
-    method: 'POST',
-    body: { conversationId, message }
+  return apiRequest(`/conversations/${conversationId}/messages?page=${page}&limit=${limit}`, {
+    method: 'GET'
   });
 }
 
-// Call endpoints
-export async function getIceServers() {
-  return apiCall('/api/calls/ice-servers');
+export async function sendMessage(conversationId, message, attachments = []) {
+  return apiRequest(`/conversations/${conversationId}/messages`, {
+    method: 'POST',
+    body: JSON.stringify({ message, attachments })
+  });
 }
 
-export async function initiateCall(recipientId, type = 'voice') {
-  return apiCall('/api/calls/initiate', {
-    method: 'POST',
-    body: { recipientId, type }
+export async function updateMessage(conversationId, messageId, message) {
+  return apiRequest(`/conversations/${conversationId}/messages/${messageId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ message })
   });
+}
+
+export async function deleteMessage(conversationId, messageId) {
+  return apiRequest(`/conversations/${conversationId}/messages/${messageId}`, {
+    method: 'DELETE'
+  });
+}
+
+export async function reactToMessage(conversationId, messageId, reaction) {
+  return apiRequest(`/conversations/${conversationId}/messages/${messageId}/react`, {
+    method: 'POST',
+    body: JSON.stringify({ reaction })
+  });
+}
+
+export async function markAsRead(conversationId) {
+  return apiRequest(`/conversations/${conversationId}/mark-read`, { method: 'POST' });
+}
+
+// Call Endpoints
+export async function initiateCall(recipientId, callType = 'video') {
+  return apiRequest('/calls', {
+    method: 'POST',
+    body: JSON.stringify({ recipientId, callType })
+  });
+}
+
+export async function getCallHistory(page = 1, limit = 20) {
+  return apiRequest(`/calls/history?page=${page}&limit=${limit}`, { method: 'GET' });
 }
 
 export async function endCall(callId) {
-  return apiCall('/api/calls/end', {
+  return apiRequest(`/calls/${callId}/end`, { method: 'POST' });
+}
+
+export async function recordCall(callId, enabled) {
+  return apiRequest(`/calls/${callId}/record`, {
     method: 'POST',
-    body: { callId }
+    body: JSON.stringify({ enabled })
   });
 }
 
-// AI endpoints
-export async function generateAIContent(data) {
-  return apiCall('/api/ai/generate', {
+// File Upload
+export async function uploadFile(file, conversationId) {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  return fetch(`${API_BASE_URL}/conversations/${conversationId}/upload`, {
     method: 'POST',
-    body: data
+    headers: {
+      'Authorization': `Bearer ${getAuthToken()}`
+    },
+    body: formData
+  }).then(res => res.json());
+}
+
+// Notifications
+export async function getNotifications(page = 1, limit = 20) {
+  return apiRequest(`/notifications?page=${page}&limit=${limit}`, { method: 'GET' });
+}
+
+export async function markNotificationAsRead(notificationId) {
+  return apiRequest(`/notifications/${notificationId}/read`, { method: 'POST' });
+}
+
+export async function deleteNotification(notificationId) {
+  return apiRequest(`/notifications/${notificationId}`, { method: 'DELETE' });
+}
+
+// Settings
+export async function getSettings() {
+  return apiRequest('/settings', { method: 'GET' });
+}
+
+export async function updateSettings(settings) {
+  return apiRequest('/settings', {
+    method: 'PUT',
+    body: JSON.stringify(settings)
   });
 }
 
-export async function getAIUsage() {
-  return apiCall('/api/ai/usage');
-}
-
-export async function getAIHistory() {
-  return apiCall('/api/ai/history');
-}
-
-// Premium/Payment endpoints
-export async function getPremiumPlans() {
-  return apiCall('/api/premium/plans');
-}
-
-export async function initializePayment(planId) {
-  return apiCall('/api/payments/paystack/initialize', {
+export async function changePassword(currentPassword, newPassword) {
+  return apiRequest('/users/me/change-password', {
     method: 'POST',
-    body: { planId }
+    body: JSON.stringify({ currentPassword, newPassword })
   });
 }
 
-export async function verifyPayment(reference) {
-  return apiCall('/api/payments/paystack/verify', {
+// Two-Factor Authentication
+export async function enableTwoFactor() {
+  return apiRequest('/auth/2fa/enable', { method: 'POST' });
+}
+
+export async function disableTwoFactor(code) {
+  return apiRequest('/auth/2fa/disable', {
     method: 'POST',
-    body: { reference }
+    body: JSON.stringify({ code })
   });
 }
 
-export async function getSubscriptionStatus() {
-  return apiCall('/api/premium/status');
-}
-
-export async function getPaymentHistory() {
-  return apiCall('/api/payments/history');
-}
-
-// Wallet endpoints
-export async function getWalletBalance() {
-  return apiCall('/api/wallet/balance');
-}
-
-export async function getTransactions() {
-  return apiCall('/api/wallet/transactions');
-}
-
-// Stories endpoints
-export async function createStory(content) {
-  return apiCall('/api/stories', {
+export async function verifyTwoFactorCode(code) {
+  return apiRequest('/auth/2fa/verify', {
     method: 'POST',
-    body: { content }
+    body: JSON.stringify({ code })
   });
-}
-
-export async function getStories() {
-  return apiCall('/api/stories');
-}
-
-export async function viewStory(storyId) {
-  return apiCall(`/api/stories/${storyId}/view`, {
-    method: 'POST'
-  });
-}
-
-// Channels endpoints
-export async function getChannels(page = 1) {
-  return apiCall(`/api/channels?page=${page}`);
-}
-
-export async function getChannel(channelId) {
-  return apiCall(`/api/channels/${channelId}`);
-}
-
-export async function followChannel(channelId) {
-  return apiCall(`/api/channels/${channelId}/follow`, {
-    method: 'POST'
-  });
-}
-
-export async function unfollowChannel(channelId) {
-  return apiCall(`/api/channels/${channelId}/unfollow`, {
-    method: 'POST'
-  });
-}
-
-// Error handling utility
-export function handleApiError(error) {
-  if (error.message.includes('API Error: 400')) {
-    return 'Invalid request. Please check your input.';
-  } else if (error.message.includes('API Error: 401')) {
-    return 'Authentication failed. Please login again.';
-  } else if (error.message.includes('API Error: 403')) {
-    return 'You do not have permission to perform this action.';
-  } else if (error.message.includes('API Error: 404')) {
-    return 'Resource not found.';
-  } else if (error.message.includes('API Error: 429')) {
-    return 'Too many requests. Please try again later.';
-  } else if (error.message.includes('API Error: 500')) {
-    return 'Server error. Please try again later.';
-  }
-  return error.message || 'An error occurred. Please try again.';
 }
